@@ -1,0 +1,15 @@
+// Program Flow
+digraph {
+	rankdir=LR
+	node [fillcolor=lightblue fontname=Helvetica shape=oval style=filled]
+	print [label=print]
+	main [label=main]
+	add_numbers [label=add_numbers]
+	process_data [label=process_data]
+	"Main Script" [label=Start]
+	process_data -> add_numbers [label="(data, 10)" fontcolor=red fontsize=10]
+	process_data -> print [label="(result)" fontcolor=red fontsize=10]
+	main -> process_data [label="(x)" fontcolor=red fontsize=10]
+	main -> process_data [label="(20)" fontcolor=red fontsize=10]
+	"Main Script" -> main [label="" fontcolor=red fontsize=10]
+}
