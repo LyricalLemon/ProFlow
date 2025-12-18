@@ -1,14 +1,15 @@
 import ast
 import os
 import sys
-from typing import Optional
+from typing import Dict, List, Optional, Set, Tuple
 
-import graphviz
+
+FlowEdge = Tuple[str, str, str]  # (caller, callee, args_as_text)
 
 
 class FlowAnalyzer(ast.NodeVisitor):
     def __init__(self):
-        self.flow_data = []
+        self.flow_data: List[FlowEdge] = []
         self.current_function = "Main Script"
 
     def visit_FunctionDef(self, node):
@@ -44,17 +45,18 @@ class FlowAnalyzer(ast.NodeVisitor):
         return None
 
 
-def generate_flow_diagram(target_file: str, output_name: str = "flow_diagram", view: bool = True) -> Optional[str]:
-    """Generate a program flow PNG diagram for a Python file.
+def analyze_flow(target_file: str) -> Optional[Dict[str, object]]:
+    """Parse a Python file and return program flow data for GUI rendering.
 
-    Returns the full path to the generated PNG, or None on error.
+    Returns a dict with:
+      - nodes: set[str]
+      - edges: list[(caller, callee, args_as_text)]
+    or None on error.
     """
 
     if not os.path.exists(target_file):
         print(f"Error: Could not find file at: {os.path.abspath(target_file)}")
         return None
-
-    print(f"Analyzing: {os.path.abspath(target_file)}...")
 
     try:
         with open(target_file, "r", encoding="utf-8") as source:
@@ -66,34 +68,12 @@ def generate_flow_diagram(target_file: str, output_name: str = "flow_diagram", v
     analyzer = FlowAnalyzer()
     analyzer.visit(tree)
 
-    dot = graphviz.Digraph(comment="Program Flow", format="png")
-    dot.attr(rankdir="LR")
-    dot.attr("node", shape="oval", style="filled", fillcolor="lightblue", fontname="Helvetica")
-
-    functions = set()
+    nodes: Set[str] = set(["Main Script"])
     for caller, callee, _ in analyzer.flow_data:
-        functions.add(caller)
-        functions.add(callee)
+        nodes.add(caller)
+        nodes.add(callee)
 
-    for func in functions:
-        label = "Start" if func == "Main Script" else func
-        dot.node(func, label=label)
-
-    for caller, callee, args in analyzer.flow_data:
-        label = f"({args})" if args else ""
-        dot.edge(caller, callee, label=label, fontsize="10", fontcolor="red")
-
-    try:
-        # graphviz.render returns the path to the rendered file
-        rendered_path = dot.render(output_name, view=view)
-    except Exception as e:
-        print(f"Error: Failed to render diagram (is Graphviz installed?): {e}")
-        return None
-
-    # rendered_path should already be a .png file, but normalize just in case
-    png_path = rendered_path if rendered_path.lower().endswith(".png") else f"{rendered_path}.png"
-    print(f"Success! Diagram generated: {png_path}")
-    return os.path.abspath(png_path)
+    return {"nodes": nodes, "edges": analyzer.flow_data}
 
 
 def _run_cli() -> int:
@@ -102,8 +82,17 @@ def _run_cli() -> int:
         return 2
 
     target_path = sys.argv[1]
-    out = generate_flow_diagram(target_path, view=True)
-    return 0 if out else 1
+    data = analyze_flow(target_path)
+    if not data:
+        return 1
+
+    edges = data["edges"]
+    print("Edges:")
+    for caller, callee, args in edges:  # type: ignore[misc]
+        suffix = f" ({args})" if args else ""
+        print(f"  {caller} -> {callee}{suffix}")
+
+    return 0
 
 
 # --- Usage ---
