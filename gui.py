@@ -1,27 +1,65 @@
+import builtins
 import os
 import tkinter as tk
 from tkinter import filedialog, messagebox
 from typing import Dict, List, Optional, Set, Tuple
+from PIL import Image, ImageTk
 
 from main import FlowEdge, analyze_flow
-
 
 # Theme
 BG = "#4a4a4a"  # grey
 PANEL_BG = "#3f3f3f"
 NODE_BG = "#2f2f2f"
 ORANGE = "#ff8c00"  # bright orange
-ORANGE_SOFT = "#cc6f00"
 
+BUILTINS: Set[str] = set(dir(builtins))
 
 def _is_python_file(path: str) -> bool:
     return isinstance(path, str) and path.lower().endswith(".py") and os.path.isfile(path)
-
 
 def _clean_dnd_path(path: str) -> str:
     # On Windows tkinterdnd2 may wrap paths in braces if they contain spaces.
     return path.strip().strip("{}")
 
+def _create_rounded_rect(
+    canvas: tk.Canvas,
+    x0: int,
+    y0: int,
+    x1: int,
+    y1: int,
+    radius: int,
+    **kwargs,
+):
+    # Approximate a rounded rectangle using a smoothed polygon.
+    r = max(0, min(radius, abs(x1 - x0) // 2, abs(y1 - y0) // 2))
+    points = [
+        x0 + r,
+        y0,
+        x1 - r,
+        y0,
+        x1,
+        y0,
+        x1,
+        y0 + r,
+        x1,
+        y1 - r,
+        x1,
+        y1,
+        x1 - r,
+        y1,
+        x0 + r,
+        y1,
+        x0,
+        y1,
+        x0,
+        y1 - r,
+        x0,
+        y0 + r,
+        x0,
+        y0,
+    ]
+    return canvas.create_polygon(points, smooth=True, splinesteps=16, **kwargs)
 
 def _compute_layout(nodes: Set[str], edges: List[FlowEdge]) -> Dict[str, Tuple[int, int]]:
     # Simple left-to-right layered layout (good enough for v1).
@@ -70,56 +108,82 @@ def _compute_layout(nodes: Set[str], edges: List[FlowEdge]) -> Dict[str, Tuple[i
 
     return pos
 
-
 class ProFlowGUI:
     def __init__(self, root: tk.Tk, dnd_available: bool):
         self.root = root
         self.dnd_available = dnd_available
         self.selected_file: Optional[str] = None
 
+        self.hide_builtins_var = tk.BooleanVar(value=False)
+        self._last_nodes: Set[str] = set()
+        self._last_edges: List[FlowEdge] = []
+        self._last_assigned_to_by_callee: Dict[str, Set[str]] = {}
+        self._tooltip_items: List[int] = []
+        self._node_meta: Dict[str, Dict[str, List[str]]] = {}
+
         self.root.title("ProFlow")
         self.root.geometry("980x620")
         self.root.minsize(820, 520)
         self.root.configure(bg=BG)
 
+        logo_image = Image.open("assets/ProFlow_Logo.png").convert("RGBA")
+        logo_image = logo_image.resize((45, 45), Image.LANCZOS)
+        self.logo_photo = ImageTk.PhotoImage(logo_image)
+
         # Top controls
         self.controls = tk.Frame(self.root, bg=PANEL_BG)
         self.controls.pack(side="top", fill="x")
 
-        self.title_label = tk.Label(
+        # Logo label (replaces "ProFlow" text)
+        self.logo_label = tk.Label(
             self.controls,
-            text="ProFlow",
-            bg=PANEL_BG,
-            fg=ORANGE,
-            font=("Helvetica", 18, "bold"),
+            image=self.logo_photo,
+            bg=PANEL_BG
         )
-        self.title_label.pack(side="left", padx=14, pady=10)
+        self.logo_label.pack(side="left", padx=14, pady=10)
 
         self.open_btn = tk.Button(
             self.controls,
-            text="Open Python File...",
+            text="Open Python File",
             command=self.open_file_dialog,
             bg=BG,
             fg=ORANGE,
+            font=("Helvetica", 12, "bold"),
             activebackground=BG,
             activeforeground=ORANGE,
-            relief="flat",
-            width=18,
+            relief="raised",
+            width=15,
         )
         self.open_btn.pack(side="right", padx=14, pady=10)
 
         self.clear_btn = tk.Button(
             self.controls,
-            text="Clear",
+            text="Clear Diagram",
             command=self.clear_diagram,
             bg=BG,
             fg=ORANGE,
+            font=("Helvetica", 12, "bold"),
             activebackground=BG,
             activeforeground=ORANGE,
-            relief="flat",
-            width=10,
+            relief="raised",
+            width=12,
         )
-        self.clear_btn.pack(side="right", padx=(0, 10), pady=10)
+        self.clear_btn.pack(side="right", padx=(0, 5), pady=10)
+
+        self.hide_builtins_btn = tk.Checkbutton(
+            self.controls,
+            text="Hide Built-Ins",
+            variable=self.hide_builtins_var,
+            command=self._redraw_last,
+            bg=BG,
+            fg=ORANGE,
+            font=("Helvetica", 12, "bold"),
+            activebackground=PANEL_BG,
+            activeforeground=ORANGE,
+            selectcolor=BG,
+            relief="raised",
+        )
+        self.hide_builtins_btn.pack(side="right", padx=(0, 10), pady=10)
 
         self.status_var = tk.StringVar(value="Drop a .py file into the window, or click 'Open Python File...'.")
         self.status_label = tk.Label(
@@ -133,8 +197,8 @@ class ProFlowGUI:
         )
         self.status_label.pack(side="top", fill="x", padx=10, pady=(6, 0))
 
-        hint_text = "Drag-and-drop is enabled." if dnd_available else "Drag-and-drop not available (pip install tkinterdnd2)."
-        self.hint_label = tk.Label(self.root, text=hint_text, bg=BG, fg=ORANGE_SOFT, font=("Helvetica", 9))
+        hint_text = "Drag-and-drop is enabled :)" if dnd_available else "Drag-and-drop not available :( -> (pip install tkinterdnd2)."
+        self.hint_label = tk.Label(self.root, text=hint_text, bg=BG, fg=ORANGE, font=("Helvetica", 9))
         self.hint_label.pack(side="top", fill="x", padx=10, pady=(2, 8))
 
         # Diagram canvas + scrollbars
@@ -167,7 +231,7 @@ class ProFlowGUI:
             0,
             0,
             text="Drag Python Files ;)",
-            fill=ORANGE_SOFT,
+            fill=ORANGE,
             font=("Helvetica", 52, "bold"),
             anchor="center",
         )
@@ -186,10 +250,17 @@ class ProFlowGUI:
 
     def clear_diagram(self):
         self.canvas.delete("flow")
+        self._hide_tooltip()
+
         # Re-show watermark
         self.canvas.itemconfigure(self.watermark_id, state="normal")
         self.canvas.configure(scrollregion=(0, 0, 0, 0))
         self.status_var.set("Drop a .py file into the window, or click 'Open Python File...'.")
+
+        self._last_nodes = set()
+        self._last_edges = []
+        self._last_assigned_to_by_callee = {}
+        self._node_meta = {}
 
     def open_file_dialog(self):
         path = filedialog.askopenfilename(
@@ -200,16 +271,119 @@ class ProFlowGUI:
             return
         self._handle_file(path)
 
-    def _draw_flow(self, nodes: Set[str], edges: List[FlowEdge]):
+    def _build_node_meta(self, nodes: Set[str], edges: List[FlowEdge], assigned_to_by_callee: Dict[str, Set[str]]):
+        called_with: Dict[str, Set[str]] = {}
+        for _caller, callee, args in edges:
+            if args:
+                called_with.setdefault(callee, set()).add(args)
+
+        meta: Dict[str, Dict[str, List[str]]] = {}
+        for n in nodes:
+            meta[n] = {
+                "called_with": sorted(called_with.get(n, set())),
+                "assigned_to": sorted(assigned_to_by_callee.get(n, set())),
+            }
+        self._node_meta = meta
+
+    def _filter_graph(self, nodes: Set[str], edges: List[FlowEdge]) -> Tuple[Set[str], List[FlowEdge]]:
+        if not self.hide_builtins_var.get():
+            return nodes, edges
+
+        filtered_nodes = set(n for n in nodes if (n == "Main Script" or n not in BUILTINS))
+        filtered_edges = [
+            (caller, callee, args)
+            for (caller, callee, args) in edges
+            if caller in filtered_nodes and callee in filtered_nodes
+        ]
+        return filtered_nodes, filtered_edges
+
+    def _hide_tooltip(self):
+        for item in self._tooltip_items:
+            try:
+                self.canvas.delete(item)
+            except Exception:
+                pass
+        self._tooltip_items = []
+
+    def _show_tooltip(self, node: str, event):
+        self._hide_tooltip()
+
+        info = self._node_meta.get(node, {})
+        called_with = info.get("called_with", [])
+        assigned_to = info.get("assigned_to", [])
+
+        lines: List[str] = []
+        label = "Start" if node == "Main Script" else node
+        lines.append(f"{label}")
+
+        if called_with:
+            lines.append("")
+            lines.append("Parameters:")
+            for s in called_with[:10]:
+                lines.append(f"  ({s})")
+            if len(called_with) > 10:
+                lines.append(f"  +{len(called_with) - 10} more")
+
+        if assigned_to:
+            lines.append("")
+            lines.append("Variable Assignment:")
+            for s in assigned_to[:12]:
+                lines.append(f"  {s}")
+            if len(assigned_to) > 12:
+                lines.append(f"  +{len(assigned_to) - 12} more")
+
+        if len(lines) == 1:
+            lines.append("")
+            lines.append("No metadata")
+
+        text = "\n".join(lines)
+
+        cx = int(self.canvas.canvasx(event.x))
+        cy = int(self.canvas.canvasy(event.y))
+
+        pad = 10
+        text_id = self.canvas.create_text(
+            cx + 20,
+            cy + 20,
+            text=text,
+            fill=ORANGE,
+            font=("Helvetica", 9),
+            anchor="nw",
+            tags=("flow", "tooltip"),
+        )
+        bbox = self.canvas.bbox(text_id)
+        if not bbox:
+            return
+        x0, y0, x1, y1 = bbox
+        rect_id = _create_rounded_rect(
+            self.canvas,
+            x0 - pad,
+            y0 - pad,
+            x1 + pad,
+            y1 + pad,
+            radius=10,
+            fill=PANEL_BG,
+            outline=ORANGE,
+            width=2,
+            tags=("flow", "tooltip"),
+        )
+        self.canvas.tag_raise(text_id, rect_id)
+        self._tooltip_items = [rect_id, text_id]
+
+    def _draw_flow(self, nodes: Set[str], edges: List[FlowEdge], assigned_to_by_callee: Dict[str, Set[str]]):
         self.canvas.delete("flow")
+        self._hide_tooltip()
         self.canvas.itemconfigure(self.watermark_id, state="hidden")
+
+        nodes, edges = self._filter_graph(nodes, edges)
+        self._build_node_meta(nodes, edges, assigned_to_by_callee)
 
         pos = _compute_layout(nodes, edges)
 
         # Node size heuristic
         def node_size(label: str) -> Tuple[int, int]:
-            w = max(130, min(320, 10 * len(label)))
-            h = 62
+            w = max(140, min(360, 11 * len(label)))
+            h = 64
             return w, h
 
         bounds_min_x = 10**9
@@ -218,7 +392,7 @@ class ProFlowGUI:
         bounds_max_y = -10**9
 
         # Draw edges first so nodes appear on top.
-        for caller, callee, args in edges:
+        for caller, callee, _args in edges:
             if caller not in pos or callee not in pos:
                 continue
             x0, y0 = pos[caller]
@@ -234,17 +408,6 @@ class ProFlowGUI:
                 arrowshape=(12, 14, 6),
                 tags=("flow",),
             )
-            if args:
-                mx = (x0 + x1) // 2
-                my = (y0 + y1) // 2
-                self.canvas.create_text(
-                    mx,
-                    my - 14,
-                    text=f"({args})",
-                    fill=ORANGE_SOFT,
-                    font=("Helvetica", 9),
-                    tags=("flow",),
-                )
 
         # Draw nodes
         for node in nodes:
@@ -256,15 +419,18 @@ class ProFlowGUI:
             x1 = x + w // 2
             y1 = y + h // 2
 
-            self.canvas.create_oval(
+            tag = f"node:{node}"
+            _create_rounded_rect(
+                self.canvas,
                 x0,
                 y0,
                 x1,
                 y1,
+                radius=16,
                 fill=NODE_BG,
                 outline=ORANGE,
                 width=2,
-                tags=("flow",),
+                tags=("flow", "node", tag),
             )
             self.canvas.create_text(
                 x,
@@ -272,8 +438,14 @@ class ProFlowGUI:
                 text=label,
                 fill=ORANGE,
                 font=("Helvetica", 12, "bold"),
-                tags=("flow",),
+                tags=("flow", "node", tag),
             )
+
+            # Hover tooltips (unbind first to avoid accumulating bindings across redraws)
+            self.canvas.tag_unbind(tag, "<Enter>")
+            self.canvas.tag_unbind(tag, "<Leave>")
+            self.canvas.tag_bind(tag, "<Enter>", lambda e, n=node: self._show_tooltip(n, e))
+            self.canvas.tag_bind(tag, "<Leave>", lambda _e: self._hide_tooltip())
 
             bounds_min_x = min(bounds_min_x, x0)
             bounds_min_y = min(bounds_min_y, y0)
@@ -284,7 +456,7 @@ class ProFlowGUI:
             self.canvas.configure(scrollregion=(0, 0, 0, 0))
             return
 
-        pad = 120
+        pad = 140
         self.canvas.configure(scrollregion=(bounds_min_x - pad, bounds_min_y - pad, bounds_max_x + pad, bounds_max_y + pad))
         self.canvas.xview_moveto(0)
         self.canvas.yview_moveto(0)
@@ -306,9 +478,19 @@ class ProFlowGUI:
 
         nodes = data["nodes"]
         edges = data["edges"]
-        self._draw_flow(nodes, edges)  # type: ignore[arg-type]
-        self.status_var.set("Diagram rendered. (Tip: click + drag to pan)")
+        assigned_to_by_callee = data.get("assigned_to_by_callee", {})
 
+        self._last_nodes = nodes  # type: ignore[assignment]
+        self._last_edges = edges  # type: ignore[assignment]
+        self._last_assigned_to_by_callee = assigned_to_by_callee  # type: ignore[assignment]
+
+        self._draw_flow(nodes, edges, assigned_to_by_callee)  # type: ignore[arg-type]
+        self.status_var.set("Diagram rendered. (Tip: hover nodes for details, click + drag to pan)")
+
+    def _redraw_last(self):
+        if not self._last_nodes:
+            return
+        self._draw_flow(self._last_nodes, self._last_edges, self._last_assigned_to_by_callee)
 
 def run_app() -> None:
     dnd_available = False
@@ -339,7 +521,6 @@ def run_app() -> None:
         app.canvas.dnd_bind("<<Drop>>", _on_drop)
 
     root.mainloop()
-
 
 if __name__ == "__main__":
     run_app()

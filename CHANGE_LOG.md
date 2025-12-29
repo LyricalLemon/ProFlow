@@ -2,10 +2,19 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
- - Clean up edge variables, implement mouse-hover feature to display variables/parameters instead. 
+ - tweak hover feature so that it continously follows the mouse instead of just disappearing and reappearing when the mouse stops moving!
  - Add Zoom in/out feature
- - Add Cleaner UI, use rectangles with rounded edges instead of pure ovals for cleaner look.
  - Add settings page to allow user to tweak color, size, shapes of the diagram!
+
+## [v2.2.3] - 29/12/2025
+### Added
+- Removed parameter text on edges, No more (...args...) drawn between function calls, so large graphs won’t have overlapping argument labels anymore.
+- When you hover a node, a small rounded tooltip box appears (grey background + orange border/text) showing:
+    ◦  Called with: unique argument lists used to call that function
+    ◦  Assigned to: variables that the function call result is assigned to (e.g. result = foo())
+- Small UI changed -> All nodes are now rounded rectangles instead of ovals. Custom Logo applied too!
+- Added a Hide built-ins checkbox in the top bar.
+    •  When enabled, nodes whose names match Python built-ins (e.g. print, len, range, etc.) are filtered out to reduce clutter.
 
 ## [v2.1.2] - 18/12/2025
 ### Added

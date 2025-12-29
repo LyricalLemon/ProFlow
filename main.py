@@ -11,12 +11,39 @@ class FlowAnalyzer(ast.NodeVisitor):
     def __init__(self):
         self.flow_data: List[FlowEdge] = []
         self.current_function = "Main Script"
+        self.defined_functions: Set[str] = set()
+        self.assigned_to_by_callee: Dict[str, Set[str]] = {}
 
     def visit_FunctionDef(self, node):
+        self.defined_functions.add(node.name)
         previous_function = self.current_function
         self.current_function = node.name
         self.generic_visit(node)
         self.current_function = previous_function
+
+    def visit_Assign(self, node):
+        # Capture: x = foo(...)
+        if isinstance(node.value, ast.Call):
+            callee_name = self._get_func_name(node.value)
+            if callee_name:
+                targets: List[str] = []
+                for t in node.targets:
+                    targets.extend(self._extract_target_names(t))
+                if targets:
+                    self.assigned_to_by_callee.setdefault(callee_name, set()).update(targets)
+
+        self.generic_visit(node)
+
+    def visit_AnnAssign(self, node):
+        # Capture: x: int = foo(...)
+        if isinstance(node.value, ast.Call):
+            callee_name = self._get_func_name(node.value)
+            if callee_name:
+                targets = self._extract_target_names(node.target)
+                if targets:
+                    self.assigned_to_by_callee.setdefault(callee_name, set()).update(targets)
+
+        self.generic_visit(node)
 
     def visit_Call(self, node):
         callee_name = self._get_func_name(node)
@@ -44,6 +71,26 @@ class FlowAnalyzer(ast.NodeVisitor):
             return node.func.attr
         return None
 
+    def _extract_target_names(self, node) -> List[str]:
+        # Handles x, a.b, a[b], tuples/lists of targets.
+        if isinstance(node, ast.Name):
+            return [node.id]
+        if isinstance(node, ast.Attribute):
+            # keep attribute targets readable: obj.attr
+            base = self._extract_target_names(node.value)
+            if base:
+                return [f"{base[0]}.{node.attr}"]
+            return [node.attr]
+        if isinstance(node, ast.Subscript):
+            base = self._extract_target_names(node.value)
+            return [f"{base[0]}[...]"] if base else ["[...]"]
+        if isinstance(node, (ast.Tuple, ast.List)):
+            names: List[str] = []
+            for elt in node.elts:
+                names.extend(self._extract_target_names(elt))
+            return names
+        return []
+
 
 def analyze_flow(target_file: str) -> Optional[Dict[str, object]]:
     """Parse a Python file and return program flow data for GUI rendering.
@@ -51,6 +98,8 @@ def analyze_flow(target_file: str) -> Optional[Dict[str, object]]:
     Returns a dict with:
       - nodes: set[str]
       - edges: list[(caller, callee, args_as_text)]
+      - defined_functions: set[str]
+      - assigned_to_by_callee: dict[str, set[str]]
     or None on error.
     """
 
@@ -68,12 +117,17 @@ def analyze_flow(target_file: str) -> Optional[Dict[str, object]]:
     analyzer = FlowAnalyzer()
     analyzer.visit(tree)
 
-    nodes: Set[str] = set(["Main Script"])
+    nodes: Set[str] = set(["Main Script"])  # always present
     for caller, callee, _ in analyzer.flow_data:
         nodes.add(caller)
         nodes.add(callee)
 
-    return {"nodes": nodes, "edges": analyzer.flow_data}
+    return {
+        "nodes": nodes,
+        "edges": analyzer.flow_data,
+        "defined_functions": analyzer.defined_functions,
+        "assigned_to_by_callee": analyzer.assigned_to_by_callee,
+    }
 
 
 def _run_cli() -> int:
